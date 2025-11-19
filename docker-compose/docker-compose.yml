@@ -1,6 +1,84 @@
 version: '3.8'
 
 services:
+  minio:
+    container_name: 'minio-service'
+    image: mosipint/minio:2022.2.7-debian-10-r0
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    environment:
+      MINIO_ROOT_USER: minioadmin      # Access Key
+      MINIO_ROOT_PASSWORD: minioadmin  # Secret Key
+
+  datashare:
+    container_name: 'datashare-service'
+    image: mosipid/data-share-service:1.3.0-beta.2
+    ports:
+      - "8097:8097"
+    environment:
+      - active_profile_env=inji-default,standalone
+      - SPRING_CONFIG_NAME=data-share
+      - SPRING_CONFIG_LOCATION=/home/mosip/
+      - DATASHARE_DOMAIN=datashare-service:8097
+    volumes:
+      - ./config/data-share-inji-default.properties:/home/mosip/data-share-inji-default.properties
+      - ./config/data-share-standalone.properties:/home/mosip/data-share-standalone.properties
+    depends_on:
+      - minio
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  mimoto-service:
+    container_name: 'mimoto-service'
+    image: 'mosipid/mimoto:0.19.1'
+    user: root
+    ports:
+      - "8099:8099"
+    environment:
+      - container_user=mosip
+      - active_profile_env=default
+      - SPRING_CONFIG_NAME=mimoto
+      - SPRING_CONFIG_LOCATION=/home/mosip/
+      - SPRING_CLOUD_BOOTSTRAP_LOCATION=/home/mosip/mimoto-bootstrap.properties
+      - oidc_p12_password=xy4gh6swa2i
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/inji_mimoto
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - GOOGLE_OAUTH_CLIENT_ID=clientId
+      - GOOGLE_OAUTH_CLIENT_SECRET=clientSecret
+    volumes:
+      - ./config/mimoto-default.properties:/home/mosip/mimoto-default.properties
+      - ./config/mimoto-bootstrap.properties:/home/mosip/mimoto-bootstrap.properties
+      - ./certs/oidckeystore.p12:/home/mosip/certs/oidckeystore.p12
+    depends_on:
+      - datashare
+      - postgres
+      - redis
+
+  inji-web:
+    container_name: 'inji-web'
+    image: 'mosipid/inji-web:0.14.1'
+    ports:
+      - '3004:3004'
+    environment:
+      - DEFAULT_LANG=en
+      - MIMOTO_URL=http://localhost:3004/v1/mimoto
+      - IGNORED_ISSUER_IDS=MockMdl
+    volumes:
+      - ./config/mimoto-issuers-config.json:/home/mosip/mimoto-issuers-config.json
+      - ./config/mimoto-trusted-verifiers.json:/home/mosip/mimoto-trusted-verifiers.json
+      - ./config/credential-template.html:/home/mosip/credential-template.html
+    depends_on:
+      - mimoto-service
+
   verify-service:
     container_name: verify-service
     image: mosipid/inji-verify-service:0.15.1
@@ -11,7 +89,7 @@ services:
       - active_profile_env=default
       - DATABASE_HOST=postgres
       - DATABASE_PORT=5432
-      - DATABASE_NAME=inji_verify
+      - DATABASE_NAME=postgres
       - DATABASE_SCHEMA=verify
       - DATABASE_USERNAME=postgres
       - DATABASE_PASSWORD=postgres
@@ -44,13 +122,20 @@ services:
       - verify-service
 
   postgres:
-    image: postgres:13
-    container_name: postgres-db
+    image: 'postgres:latest'
+    container_name: 'postgres-service'
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: inji_verify
+      POSTGRES_DB: postgres  # Default database
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - ./db-init:/docker-entrypoint-initdb.d
+      - postgres-data:/var/lib/postgresql/data
+      - ./mimoto_init.sql:/docker-entrypoint-initdb.d/01-mimoto_init.sql
+      - ./db-init:/docker-entrypoint-initdb.d/02-verify-init
+    # Remove the postgres-verify service entirely
+
+volumes:
+  postgres-data:
+  redis-data:
